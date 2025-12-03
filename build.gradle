@@ -251,7 +251,7 @@ jar {
 
     }
     manifest.attributes([
-            "MixinConfigs": "createfastschematiccannon.mixins.json",
+            "MixinConfigs": "createlazytick.mixins.json",
             "Git-Hash"    :  gitHash
     ])
 
@@ -379,5 +379,20 @@ boolean hasUnstaged() {
         return !result.isEmpty()
     } catch (Throwable ignored) {
         return false
+    }
+}
+
+allprojects {
+    tasks.withType(JavaCompile) {
+        options.encoding = 'UTF-8'
+        options.compilerArgs += ['-encoding', 'utf8']
+    }
+
+    tasks.withType(Test) {
+        systemProperty "file.encoding", "UTF-8"
+    }
+
+    tasks.withType(Javadoc) {
+        options.encoding = 'UTF-8'
     }
 }

@@ -42,13 +42,24 @@ public class Config
             .comment("max delay tick if depot is rest")
             .defineInRange("depot_delay_max", 60, 20, Integer.MAX_VALUE);
 
+    // saw
+    public static final ForgeConfigSpec.BooleanValue ENABLE_SAW_OPTIMIZATION = BUILDER
+            .comment("Whether to enable saw recipes cache")
+            .define("enable_saw_optimization", true);
+
+    public static final ForgeConfigSpec.BooleanValue ENABLE_DEBUG_LOGGING = BUILDER
+            .comment("Whether to enable debug to show cache-stat")
+            .define("enable_debug_logging", false);
+
+    public static final ForgeConfigSpec.IntValue MAX_CACHE_SIZE = BUILDER
+            .comment("The max size of cache")
+            .defineInRange("max_cache_size", 1000, 100, 10000);
 
 
 
 
 
     //=================================================================================================
-
 
     static final ForgeConfigSpec SPEC = BUILDER.build();
 
@@ -62,8 +73,9 @@ public class Config
     public static int chute_delay_max;
     public static int depot_delay_max;
 
-
-
+    public static boolean enable_saw_optimization;
+    public static boolean enable_debug_logging;
+    public static int max_cache_size;
 
     @SubscribeEvent
     static void onLoad(final ModConfigEvent event)
@@ -77,6 +89,8 @@ public class Config
         chute_delay_max = CHUTE_DELAY_MAX.get();
         depot_delay_max = DEPOT_DELAY_MAX.get();
 
-
+        enable_saw_optimization = ENABLE_SAW_OPTIMIZATION.get();
+        enable_debug_logging = ENABLE_DEBUG_LOGGING.get();
+        max_cache_size = MAX_CACHE_SIZE.get();
     }
 }

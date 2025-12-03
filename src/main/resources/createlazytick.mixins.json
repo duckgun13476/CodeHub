@@ -11,7 +11,9 @@
     "FunnelLazyTickMixin",
     "belt.BeltFunnelInteractionLazyTickMixin",
     "belt.BeltInventoryAccessor",
-    "belt.BeltTickMixin"
+    "belt.BeltTickMixin",
+    "saw.SawCacheMixin",
+    "saw.SawBlockEntityAccessor"
   ],
   "client": [
   ],
