@@ -54,12 +54,12 @@ public abstract class CrafterRecipeMixin {
             lazytick$hasLoggedFullCache = false;
             CrafterCacheStats.reset();
 
-            // crafter_cache_record_delay(全局缓存需要再RELOAD彻底完成后才开始记录,否则可能记录到错误配方)
-            long delayMillis = Config.crafter_cache_record_delay * 1000L;
+            // global_cache_record_delay(全局缓存需要再RELOAD彻底完成后才开始记录,否则可能记录到错误配方)
+            long delayMillis = Config.global_cache_record_delay * 1000L;
             lazytick$cooldownEndTime = System.currentTimeMillis() + delayMillis;
 
             if (Config.enable_cache_crafter_debugger) {
-                CreateLazyTick.LOGGER.info("[LazyTick] Server Reload Detected. Cache cleared. Cooldown: {}s", Config.crafter_cache_record_delay);
+                CreateLazyTick.LOGGER.info("[LazyTick] Server Reload Detected. Cache cleared. Cooldown: {}s", Config.global_cache_record_delay);
             }
         }
 
