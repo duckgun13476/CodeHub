@@ -13,6 +13,8 @@ import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
 
 import net.pinkcats.createlazytick.Config;
+import net.pinkcats.createlazytick.helper.ILazyTickControl;
+import net.pinkcats.createlazytick.manager.ForcedActiveManager;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Overwrite;
 import org.spongepowered.asm.mixin.Shadow;
@@ -76,17 +78,27 @@ public class ChuteLazyTickMixin extends SmartBlockEntity implements IHaveGoggleI
     int CurrentDelayTick = 1;
     @Unique
     boolean mistake = false;
+    @Unique
+    boolean lazytick$hasRegistered = false; // [新增] 注册标记
 
     @Unique
     private void LazyTickChute(boolean CanDownload){
-        //if (!level.isClientSide) {
-           // System.out.println("Chute"+CurrentDelayTick + "  " + chuteTick);
-        //}
+        // [服务端权威] 逻辑限制在服务端
+        if (level == null) return;
         if (!level.isClientSide){
+            //if (!level.isClientSide) {
+            // System.out.println("Chute"+CurrentDelayTick + "  " + chuteTick);
+            //}
+
+            // 获取控制接口
+            ILazyTickControl control = (this instanceof ILazyTickControl) ? (ILazyTickControl) this : null;
 
             if (CanDownload){
                 CurrentDelayTick=1;
                 mistake = false;
+
+                // [同步] 成功传输 -> 活跃
+                if (control != null) control.lazytick$setSyncedTier(1, Config.chute_delay_max);
             }
             else {
                 if (CurrentDelayTick < Config.chute_delay_max) {
@@ -106,8 +118,11 @@ public class ChuteLazyTickMixin extends SmartBlockEntity implements IHaveGoggleI
                     if (CurrentDelayTick ==1) {
                         mistake = true;
                     }
+                }
 
-
+                // [同步] 堵塞/延迟增加 -> 发送状态 (保持颜色稳定)
+                if (control != null) {
+                    control.lazytick$setSyncedTier(CurrentDelayTick, Config.chute_delay_max);
                 }
             }
         }
@@ -116,7 +131,29 @@ public class ChuteLazyTickMixin extends SmartBlockEntity implements IHaveGoggleI
 
     @Inject(method = "tick" ,at=@At("HEAD" ),cancellable = true,remap = false)
     public void tick(CallbackInfo ci) {
-        if (!Config.enable_lazy_tick || !Config.enable_lazy_chute) {
+        // [新增] 注册与控制逻辑
+        ILazyTickControl control = (this instanceof ILazyTickControl) ? (ILazyTickControl) this : null;
+        if (!lazytick$hasRegistered) {
+            if (control != null && control.lazytick$isForceDisabled() && this.level != null) {
+                ForcedActiveManager.register(this.level, this.worldPosition);
+            }
+            lazytick$hasRegistered = true;
+        }
+
+        if (level == null) return;
+
+        boolean forceDisabled = (control != null && control.lazytick$isForceDisabled());
+        if (!Config.enable_lazy_tick || !Config.enable_lazy_chute || forceDisabled) {
+            if (forceDisabled) {
+                chuteTick = 0;          // 当前累计 tick 清零
+                CurrentDelayTick = 1;   // 目标延迟重置为 1 (全速)
+                mistake = false;        // 重置堵塞检测标志位
+            }
+
+            // 强制全速下显示活跃
+            if (forceDisabled && !level.isClientSide) {
+                control.lazytick$setSyncedTier(1, Config.chute_delay_max);
+            }
             return;
         }
 
@@ -125,7 +162,7 @@ public class ChuteLazyTickMixin extends SmartBlockEntity implements IHaveGoggleI
         if (!level.isClientSide)
             canPickUpItems = canDirectlyInsert();
 
-        boolean clientSide = level != null && level.isClientSide && !isVirtual();
+        boolean clientSide = level.isClientSide && !isVirtual();
         float itemMotion = getItemMotion();
         if (itemMotion != 0 && level != null && level.isClientSide)
             spawnParticles(itemMotion);
@@ -142,17 +179,21 @@ public class ChuteLazyTickMixin extends SmartBlockEntity implements IHaveGoggleI
 
         float nextOffset = itemPosition.getValue() + itemMotion;
 
-
-    if(!level.isClientSide){
-        chuteTick ++;
-        //System.out.println("chuteTick: "+chuteTick+"|"+CurrentDelayTick);
-        if (chuteTick <CurrentDelayTick){
-            ci.cancel();
-            return;
+        if (level == null) return;
+        if(!level.isClientSide){
+            chuteTick ++;
+            //System.out.println("chuteTick: "+chuteTick+"|"+CurrentDelayTick);
+            if (chuteTick <CurrentDelayTick){
+                // [同步] 睡眠期间维持显示状态
+                if (control != null) {
+                    control.lazytick$setSyncedTier(CurrentDelayTick, Config.chute_delay_max);
+                }
+                ci.cancel();
+                return;
+            }
+            chuteTick = 0;
+            //System.out.println("Run tick");
         }
-        chuteTick = 0;
-        //System.out.println("Run tick");
-    }
 
         if (itemMotion < 0) {
             if (nextOffset < .5f) {

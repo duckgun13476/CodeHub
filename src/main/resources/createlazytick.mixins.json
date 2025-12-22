@@ -24,12 +24,15 @@
     "fluid.FluidNetworkAccessor",
     "fluid.FluidNetworkMixin",
     "fluid.PipeConnectionAccessor",
+    "general.SmartBlockEntityControlMixin",
     "itemdrain.ItemDrainAccessor",
     "itemdrain.ItemDrainLazyTickMixin",
     "minecraft.CacheLabel",
     "saw.SawRecipeMixin"
   ],
   "client": [
+    "client.SmartBlockEntityGoggleMixin",
+    "client.ItemDrainGoggleMixin"
   ],
   "injectors": {
     "defaultRequire": 1

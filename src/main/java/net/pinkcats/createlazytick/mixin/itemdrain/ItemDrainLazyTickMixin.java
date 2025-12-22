@@ -17,23 +17,28 @@ import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 import net.pinkcats.createlazytick.Config;
-import net.pinkcats.createlazytick.CreateLazyTick;
+import net.pinkcats.createlazytick.helper.ILazyTickControl;
+import net.pinkcats.createlazytick.manager.ForcedActiveManager;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-@Mixin(value = ItemDrainBlockEntity.class,remap = false)
+/**
+ * 分液池 (Item Drain) - [服务端权威版 / Server Authority Mode]
+ * * 仅服务端计算冷却并更新状态。
+ * * 客户端只负责接收数据和渲染，不进行逻辑预测。
+ */
+@Mixin(value = ItemDrainBlockEntity.class, remap = false)
 public abstract class ItemDrainLazyTickMixin extends SmartBlockEntity {
 
-    // 当前实际生效的冷却倒计时
-    @Unique
-    private int outputCooldown = 0;
+    @Unique private int outputCooldown = 0;
+    @Unique private int currentWaitTime = 1;
+    @Unique private boolean lazytick$hasRegistered = false;
 
-    // 动态调整的最大冷却时长
-    @Unique
-    private int currentWaitTime = 1;
+    // [新增] 活跃状态计时器：记录上次成功工作离现在过去了多久
+    @Unique private int lazytick$activeTimer = 0;
 
     public ItemDrainLazyTickMixin(BlockEntityType<?> type, BlockPos pos, BlockState state) {
         super(type, pos, state);
@@ -41,8 +46,25 @@ public abstract class ItemDrainLazyTickMixin extends SmartBlockEntity {
 
     @Inject(method = "tick", at = @At(value = "INVOKE", target = "Lcom/simibubi/create/foundation/blockEntity/SmartBlockEntity;tick()V", shift = At.Shift.AFTER), cancellable = true, remap = false)
     public void optimizedTick(CallbackInfo ci) {
+        ILazyTickControl control = (this instanceof ILazyTickControl) ? (ILazyTickControl) this : null;
 
-        if (!Config.enable_lazy_tick || !Config.enable_lazy_item_drain) {
+        if (!lazytick$hasRegistered) {
+            if (control != null && control.lazytick$isForceDisabled() && this.level != null) {
+                ForcedActiveManager.register(this.level, this.worldPosition);
+            }
+            lazytick$hasRegistered = true;
+        }
+
+        if (!Config.enable_lazy_tick || !Config.enable_lazy_item_drain) return;
+
+        if (level == null) return;
+        // 检查强制开关
+        if (control != null && control.lazytick$isForceDisabled()) {
+            outputCooldown = 0;
+            currentWaitTime = 1;
+            lazytick$activeTimer = 0;
+
+            if (!level.isClientSide) control.lazytick$setSyncedTier(1, Config.item_drain_delay_max);
             return;
         }
 
@@ -50,29 +72,35 @@ public abstract class ItemDrainLazyTickMixin extends SmartBlockEntity {
         TransportedItemStack heldItem = accessor.getHeldItem();
         int processingTicks = accessor.getProcessingTicks();
 
+        // 1. 空闲检查
         if (heldItem == null) {
             accessor.setProcessingTicks(0);
             outputCooldown = 0;
-            currentWaitTime = 1; // 重置等待时间
+            currentWaitTime = 1;
+            lazytick$activeTimer = 0; // 重置活跃计时
+            // [服务端发包] 重置为活跃
+            if (!level.isClientSide && control != null)
+                control.lazytick$setSyncedTier(1, Config.item_drain_delay_max);
+
             ci.cancel();
             return;
         }
 
-        // 无论是物品输出堵塞还是流体倾倒堵塞，有冷却就跳过
-        if (outputCooldown > 0) {
+        // 2. 冷却跳过逻辑 (服务端权威)
+        // 客户端不跳过，保证动画流畅
+        if (!level.isClientSide && outputCooldown > 0) {
             outputCooldown--;
             ci.cancel();
             return;
         }
-        // ----------------
 
-        boolean onClient = level != null && level.isClientSide && !isVirtual();
+        // ==========================================
+        // 下面是逻辑主体
+        // ==========================================
+        boolean onClient = level.isClientSide && !isVirtual();
+        if (level == null) { ci.cancel(); return; }
 
-        if (level == null) {
-            ci.cancel();
-            return;
-        }
-
+        // --- 处理流体 ---
         if (processingTicks > 0) {
             heldItem.prevBeltPosition = .5f;
             boolean wasAtBeginning = processingTicks == ItemDrainBlockEntity.FILLING_TIME;
@@ -81,89 +109,67 @@ public abstract class ItemDrainLazyTickMixin extends SmartBlockEntity {
                 accessor.setProcessingTicks(processingTicks);
             }
 
-            // 执行原版处理逻辑
             boolean continueResult = accessor.invokeContinueProcessing();
 
             if (!continueResult) {
                 accessor.setProcessingTicks(0);
                 notifyUpdate();
-                ci.cancel();
-                return;
+                ci.cancel(); return;
             }
 
-            // 如果 ticks 被重置回 20,说明内部流体满了,懒加载
             if (accessor.getProcessingTicks() == ItemDrainBlockEntity.FILLING_TIME) {
+                // 堵塞！
                 applyBackoff();
-                ci.cancel();
-                return;
+                ci.cancel(); return;
             } else {
-                // 否则说明正在倒液,重置等待时间
-                currentWaitTime = 1;
-                outputCooldown = 0;
+                // 正常处理中 -> 标记活跃
+                lazytick$markActive(control);
             }
 
-            if (wasAtBeginning != (processingTicks == ItemDrainBlockEntity.FILLING_TIME))
-                this.sendData();
-
-            ci.cancel();
-            return;
+            if (wasAtBeginning != (processingTicks == ItemDrainBlockEntity.FILLING_TIME)) this.sendData();
+            ci.cancel(); return;
         }
 
-
-        //original method
+        // --- 物品移动 ---
         heldItem.prevBeltPosition = heldItem.beltPosition;
         heldItem.prevSideOffset = heldItem.sideOffset;
-
         heldItem.beltPosition += 1 / 8f;
 
         if (heldItem.beltPosition > 1) {
             heldItem.beltPosition = 1;
-
-            if (onClient) {
-                ci.cancel();
-                return;
-            }
+            if (onClient) { ci.cancel(); return; } // 客户端不处理输出逻辑
 
             Direction side = heldItem.insertedFrom;
-
             ItemStack tryExportingToBeltFunnel = getBehaviour(DirectBeltInputBehaviour.TYPE)
                     .tryExportingToBeltFunnel(heldItem.stack, side.getOpposite(), false);
+
             if (tryExportingToBeltFunnel != null) {
                 if (tryExportingToBeltFunnel.getCount() != heldItem.stack.getCount()) {
-                    if (tryExportingToBeltFunnel.isEmpty())
-                        accessor.setHeldItem(null);
-                    else
-                        heldItem.stack = tryExportingToBeltFunnel;
+                    if (tryExportingToBeltFunnel.isEmpty()) accessor.setHeldItem(null);
+                    else heldItem.stack = tryExportingToBeltFunnel;
                     notifyUpdate();
 
-                    // 成功部分输出,重置冷却逻辑
-                    currentWaitTime = 1;
-                    outputCooldown = 0;
+                    // [工作判定] 物品数量减少 = 成功工作
+                    lazytick$markActive(control);
 
-                    ci.cancel();
-                    return;
+                    ci.cancel(); return;
                 }
                 if (!tryExportingToBeltFunnel.isEmpty()) {
-
-                    applyBackoff(); // 漏斗阻塞,应用退避
-                    ci.cancel();
-                    return;
-
+                    // 输出堵塞
+                    applyBackoff();
+                    ci.cancel(); return;
                 }
             }
 
             BlockPos nextPosition = worldPosition.relative(side);
-            DirectBeltInputBehaviour directBeltInputBehaviour =
-                    BlockEntityBehaviour.get(level, nextPosition, DirectBeltInputBehaviour.TYPE);
+            DirectBeltInputBehaviour directBeltInputBehaviour = BlockEntityBehaviour.get(level, nextPosition, DirectBeltInputBehaviour.TYPE);
 
             if (directBeltInputBehaviour == null) {
-                if (!BlockHelper.hasBlockSolidSide(level.getBlockState(nextPosition), level, nextPosition,
-                        side.getOpposite())) {
+                if (!BlockHelper.hasBlockSolidSide(level.getBlockState(nextPosition), level, nextPosition, side.getOpposite())) {
+                    // 抛出逻辑 (成功)
                     ItemStack ejected = heldItem.stack;
-                    Vec3 outPos = VecHelper.getCenterOf(worldPosition)
-                            .add(Vec3.atLowerCornerOf(side.getNormal()).scale(.75));
-                    Vec3 outMotion = Vec3.atLowerCornerOf(side.getNormal())
-                            .scale(1 / 8f).add(0, 1 / 8f, 0);
+                    Vec3 outPos = VecHelper.getCenterOf(worldPosition).add(Vec3.atLowerCornerOf(side.getNormal()).scale(.75));
+                    Vec3 outMotion = Vec3.atLowerCornerOf(side.getNormal()).scale(1 / 8f).add(0, 1 / 8f, 0);
                     outPos = outPos.add(outMotion.normalize());
                     ItemEntity entity = new ItemEntity(level, outPos.x, outPos.y + 6 / 16f, outPos.z, ejected);
                     entity.setDeltaMovement(outMotion);
@@ -174,23 +180,21 @@ public abstract class ItemDrainLazyTickMixin extends SmartBlockEntity {
                     accessor.setHeldItem(null);
                     notifyUpdate();
 
-                    // 成功抛出物品,重置
-                    currentWaitTime = 1;
-                    outputCooldown = 0;
+                    // [工作判定] 抛出成功 = 成功工作
+                    lazytick$markActive(control);
+
                 } else {
-                    applyBackoff(); // 物理(其他类别方块)阻塞,应用退避
+                    // 堵塞
+                    applyBackoff();
                 }
-                ci.cancel();
-                return;
+                ci.cancel(); return;
             }
 
             if (!directBeltInputBehaviour.canInsertFromSide(side)) {
-                applyBackoff(); // 接口拒绝,应用退避
-                ci.cancel();
-                return;
+                applyBackoff();
+                ci.cancel(); return;
             }
 
-            // 核心卡顿点?
             ItemStack returned = directBeltInputBehaviour.handleInsertion(heldItem.copy(), side, false);
 
             if (returned.isEmpty()) {
@@ -199,59 +203,88 @@ public abstract class ItemDrainLazyTickMixin extends SmartBlockEntity {
                 accessor.setHeldItem(null);
                 notifyUpdate();
 
-                // 完全成功(物品没了),重置
-                currentWaitTime = 1;
-                outputCooldown = 0;
+                // [工作判定] 全部送出 = 成功工作
+                lazytick$markActive(control);
 
-                ci.cancel();
-                return;
+                ci.cancel(); return;
             }
 
-            // 完全失败检测(物品数量数量没变)
             if (returned.getCount() == heldItem.stack.getCount()) {
-                applyBackoff(); // 插入失败,懒加载
-                ci.cancel();
-                return;
+                applyBackoff();
+                ci.cancel(); return;
             }
 
-            // 部分插入成功(数量变化)
             if (returned.getCount() != heldItem.stack.getCount()) {
                 heldItem.stack = returned;
                 notifyUpdate();
 
-                //能够正常运行,正常加载
-                currentWaitTime = 1;
-                outputCooldown = 0;
+                // [工作判定] 部分送出（数量减少） = 成功工作
+                lazytick$markActive(control);
 
-                ci.cancel();
-                return;
+                ci.cancel(); return;
             }
 
-            ci.cancel();
-            return;
+            ci.cancel(); return;
         }
 
         if (heldItem.prevBeltPosition < .5f && heldItem.beltPosition >= .5f) {
             if (!GenericItemEmptying.canItemBeEmptied(level, heldItem.stack)) {
-                ci.cancel();
-                return;
+                ci.cancel(); return;
             }
             heldItem.beltPosition = .5f;
-            if (onClient) {
-                ci.cancel();
-                return;
-            }
+            if (onClient) { ci.cancel(); return; }
             accessor.setProcessingTicks(ItemDrainBlockEntity.FILLING_TIME);
             this.sendData();
+
+            // [工作判定] 开始处理流体 = 成功工作
+            lazytick$markActive(control);
         }
 
         ci.cancel();
     }
 
+    /**
+     * 标记机器为“活跃中”。
+     * 这会赋予机器 20 tick (1秒) 的“免疫期”。
+     * 在免疫期内，即使发生堵塞，也不会进入休眠状态，防止状态闪烁。
+     */
+    @Unique
+    private void lazytick$markActive(ILazyTickControl control) {
+        if (level == null || level.isClientSide) return;
+
+        currentWaitTime = 1;
+        outputCooldown = 0;
+        lazytick$activeTimer = 20; // 1秒免疫期
+
+        if (control != null)
+            control.lazytick$setSyncedTier(1, Config.item_drain_delay_max);
+    }
+
     @Unique
     private void applyBackoff() {
-        outputCooldown = currentWaitTime;
-        int nextTime = currentWaitTime + 5;
-        currentWaitTime = Math.min(Config.item_drain_delay_max, nextTime);
+        if (level != null && !level.isClientSide) {
+
+            // [逻辑完善] 如果处于活跃免疫期内，不进行退避，保持全速运行
+            if (lazytick$activeTimer > 0) {
+                lazytick$activeTimer--;
+                outputCooldown = 0; // 不睡觉
+                currentWaitTime = 1;
+
+                // 强制显示活跃（绿色）
+                if (this instanceof ILazyTickControl control) {
+                    control.lazytick$setSyncedTier(1, Config.item_drain_delay_max);
+                }
+                return;
+            }
+
+            // 只有当免疫期结束且依然堵塞时，才开始休眠
+            outputCooldown = currentWaitTime;
+            int nextTime = currentWaitTime + 5;
+            currentWaitTime = Math.min(Config.item_drain_delay_max, nextTime);
+
+            if (this instanceof ILazyTickControl control) {
+                control.lazytick$setSyncedTier(currentWaitTime, Config.item_drain_delay_max);
+            }
+        }
     }
 }

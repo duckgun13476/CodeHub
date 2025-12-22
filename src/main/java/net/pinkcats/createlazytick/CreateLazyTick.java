@@ -6,7 +6,9 @@ import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.event.server.ServerStartingEvent;
+import net.minecraftforge.event.server.ServerStoppingEvent;
 import net.minecraftforge.eventbus.api.IEventBus;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.ModLoadingContext;
@@ -18,6 +20,9 @@ import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
 import net.minecraftforge.registries.DeferredRegister;
 import net.minecraftforge.registries.ForgeRegistries;
 import net.minecraftforge.registries.RegistryObject;
+import net.pinkcats.createlazytick.command.LazyTickCommand;
+import net.pinkcats.createlazytick.item.LazyTickClockItem;
+import net.pinkcats.createlazytick.manager.ForcedActiveManager;
 import org.slf4j.Logger;
 
 // The value here should match an entry in the META-INF/mods.toml file
@@ -36,9 +41,8 @@ public class CreateLazyTick {
 
     public static final DeferredRegister<Item> ITEMS = DeferredRegister.create(ForgeRegistries.ITEMS,MODID);
 
-    public static final RegistryObject<Item> CLOCK = ITEMS
-            .register("clock", () -> new Item(
-             new Item.Properties()));
+    public static final RegistryObject<Item> CLOCK = ITEMS.register("clock",
+            () -> new LazyTickClockItem(new Item.Properties().stacksTo(1)));
 
 
     public CreateLazyTick() {
@@ -55,9 +59,19 @@ public class CreateLazyTick {
 
     @SubscribeEvent
     public void onServerStarting(ServerStartingEvent event) {
-
+        ForcedActiveManager.clear();
     }
 
+    @SubscribeEvent
+    public void onServerStopping(ServerStoppingEvent event) {
+        ForcedActiveManager.clear();
+        LOGGER.info("[CreateLazyTick] Cleared forced active machine cache.");
+    }
+
+    @SubscribeEvent
+    public void onRegisterCommands(RegisterCommandsEvent event) {
+        LazyTickCommand.register(event.getDispatcher());
+    }
 
     @Mod.EventBusSubscriber(modid = MODID, bus = Mod.EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)
     public static class ClientModEvents {
