@@ -38,6 +38,9 @@ public final class LazyTickScrollerOpenHelper {
         if (player.getMainHandItem().getItem() != LazyTickItem.CLOCK.get()) {
             return false;
         }
+        if (player.isShiftKeyDown()) {
+            return false;
+        }
         BlockPos targetPos = resolveOpenTargetPos(level, pos, hit);
         Block block = level.getBlockState(targetPos).getBlock();
         if (!isLazyTickScrollerTarget(block)) {
@@ -48,7 +51,7 @@ public final class LazyTickScrollerOpenHelper {
         }
 
         double localY = hit.getLocation().y - targetPos.getY();
-        if (localY >= 0.5D) {
+        if (localY >= 0.4D) {
             return false;
         }
 
@@ -60,7 +63,7 @@ public final class LazyTickScrollerOpenHelper {
     private static BlockPos resolveOpenTargetPos(Level level, BlockPos pos, BlockHitResult hit) {
         Block block = level.getBlockState(pos).getBlock();
         double localY = hit.getLocation().y - pos.getY();
-        if (block instanceof DepotBlock && localY >= 0.5D) {
+        if (block instanceof DepotBlock && localY >= 0.4D) {
             BlockPos above = pos.above();
             Block aboveBlock = level.getBlockState(above).getBlock();
             if (isFunnelVariant(aboveBlock)) {
